@@ -421,45 +421,53 @@ def gerar_resumo(
 # ══════════════════════════════════════════════════════════════════════════════
 
 _modelos: dict = {}
+DEMO_MODE: bool = False
 
 
 @asynccontextmanager
 async def lifespan(app):
+    global DEMO_MODE
     log.info("Carregando modelos...")
+    try:
+        ckpt = torch.load(MODELS_DIR / "modelo_aeroporto.pt", map_location="cpu", weights_only=False)
+        cfg  = ckpt["config"]
+        m    = LSTMAeroporto(len(ckpt["features"]), cfg["horizonte"], cfg["hidden_size"], cfg["num_layers"], cfg["dropout"])
+        m.load_state_dict(ckpt["model_state"]); m.eval()
+        _modelos["aeroporto"] = {"modelo": m, "ckpt": ckpt}
+        log.info("  ✓ Modelo de aeroporto")
 
-    ckpt = torch.load(MODELS_DIR / "modelo_aeroporto.pt", map_location="cpu", weights_only=False)
-    cfg  = ckpt["config"]
-    m    = LSTMAeroporto(len(ckpt["features"]), cfg["horizonte"], cfg["hidden_size"], cfg["num_layers"], cfg["dropout"])
-    m.load_state_dict(ckpt["model_state"]); m.eval()
-    _modelos["aeroporto"] = {"modelo": m, "ckpt": ckpt}
-    log.info("  ✓ Modelo de aeroporto")
+        ckpt = torch.load(MODELS_DIR / "modelo_assentos.pt", map_location="cpu", weights_only=False)
+        cfg  = ckpt["config"]
+        m    = FTTransformer(ckpt["vocab_sizes"], ckpt["n_numericas"], cfg["embed_dim"], cfg["n_heads"], cfg["n_layers"], cfg["ffn_dim"], cfg["dropout"])
+        m.load_state_dict(ckpt["model_state"]); m.eval()
+        _modelos["assentos"] = {"modelo": m, "ckpt": ckpt}
+        log.info("  ✓ Modelo de assentos")
 
-    ckpt = torch.load(MODELS_DIR / "modelo_assentos.pt", map_location="cpu", weights_only=False)
-    cfg  = ckpt["config"]
-    m    = FTTransformer(ckpt["vocab_sizes"], ckpt["n_numericas"], cfg["embed_dim"], cfg["n_heads"], cfg["n_layers"], cfg["ffn_dim"], cfg["dropout"])
-    m.load_state_dict(ckpt["model_state"]); m.eval()
-    _modelos["assentos"] = {"modelo": m, "ckpt": ckpt}
-    log.info("  ✓ Modelo de assentos")
+        ckpt = torch.load(MODELS_DIR / "modelo_precificacao.pt", map_location="cpu", weights_only=False)
+        cfg  = ckpt["config"]
+        m    = MLPPreco(ckpt["vocab_sizes"], 7, cfg["embed_dim"], cfg["hidden"], cfg["dropout"])
+        m.load_state_dict(ckpt["model_state"]); m.eval()
+        _modelos["precificacao"] = {"modelo": m, "ckpt": ckpt}
+        log.info("  ✓ Modelo de precificação")
 
-    ckpt = torch.load(MODELS_DIR / "modelo_precificacao.pt", map_location="cpu", weights_only=False)
-    cfg  = ckpt["config"]
-    m    = MLPPreco(ckpt["vocab_sizes"], 7, cfg["embed_dim"], cfg["hidden"], cfg["dropout"])
-    m.load_state_dict(ckpt["model_state"]); m.eval()
-    _modelos["precificacao"] = {"modelo": m, "ckpt": ckpt}
-    log.info("  ✓ Modelo de precificação")
+        lgb_bag = lgb.Booster(model_file=str(MODELS_DIR / "lgb_bagagem.txt"))
+        ckpt    = torch.load(MODELS_DIR / "dnn_bagagem.pt", map_location="cpu", weights_only=False)
+        dnn     = nn.Sequential(
+            nn.Linear(ckpt["input_dim"], 128), nn.ReLU(), nn.Dropout(0.2),
+            nn.Linear(128, 64), nn.ReLU(), nn.Dropout(0.1),
+            nn.Linear(64, 1), nn.Sigmoid(),
+        )
+        dnn.load_state_dict(ckpt["model_state"]); dnn.eval()
+        _modelos["bagagem"] = {"lgb": lgb_bag, "dnn": dnn, "ckpt": ckpt}
+        log.info("  ✓ Modelo de bagagem")
 
-    lgb_bag = lgb.Booster(model_file=str(MODELS_DIR / "lgb_bagagem.txt"))
-    ckpt    = torch.load(MODELS_DIR / "dnn_bagagem.pt", map_location="cpu", weights_only=False)
-    dnn     = nn.Sequential(
-        nn.Linear(ckpt["input_dim"], 128), nn.ReLU(), nn.Dropout(0.2),
-        nn.Linear(128, 64), nn.ReLU(), nn.Dropout(0.1),
-        nn.Linear(64, 1), nn.Sigmoid(),
-    )
-    dnn.load_state_dict(ckpt["model_state"]); dnn.eval()
-    _modelos["bagagem"] = {"lgb": lgb_bag, "dnn": dnn, "ckpt": ckpt}
-    log.info("  ✓ Modelo de bagagem")
-
-    log.info("Todos os modelos carregados!")
+        log.info("Todos os modelos carregados!")
+    except Exception as exc:
+        log.warning(
+            f"Arquivos de modelo não encontrados ({exc}). "
+            "Iniciando em MODO DEMO — respostas geradas por heurística."
+        )
+        DEMO_MODE = True
     yield
 
 
@@ -711,11 +719,74 @@ def inferir_bagagem(dados: EntradaVoo):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  MODO DEMO — heurística quando os modelos não estão disponíveis
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _prever_demo(dados: EntradaVoo) -> dict:
+    """Retorna predições realistas geradas por heurística quando os modelos não estão disponíveis."""
+    flag_int = calcular_flag_int(dados.aeroporto_origem, dados.aeroporto_destino)
+    hora     = dados.hora_partida
+    mes      = dados.mes
+    dia      = dados.dia_semana
+    pico     = 6 <= hora <= 9 or 17 <= hora <= 20
+    alta_temporada = mes in {1, 2, 7, 12}
+    fim_semana     = dia in {"Sexta-feira", "Domingo"}
+
+    # aeroporto — mesma lógica de inferir_aeroporto (já é heurística)
+    prob_aero, nivel_aero = inferir_aeroporto(dados)
+
+    # assentos
+    base_occ = 0.82 if flag_int else 0.74
+    taxa_occ = round(min(0.99, base_occ + (0.08 if pico else 0) + (0.07 if alta_temporada else 0) + (0.05 if fim_semana else 0)), 3)
+    vazios   = max(0, round(dados.assentos * (1 - taxa_occ)))
+    bucket   = "lotado" if taxa_occ > 0.90 else "quase cheio" if taxa_occ > 0.70 else "parcial" if taxa_occ > 0.40 else "vazio"
+
+    # precificação
+    base_preco = 0.65 if flag_int else 0.45
+    pressao    = round(min(0.99, base_preco + (0.10 if alta_temporada else 0) + (0.08 if fim_semana else 0) + (0.06 if pico else 0)), 3)
+    rec_preco  = "desconto" if pressao < 0.30 else "normal" if pressao < 0.55 else "premium" if pressao < 0.80 else "máximo"
+
+    # bagagem
+    base_bag = 0.35 if flag_int else 0.12
+    bag_dist = 0.10 if dados.distancia_km > 1500 else 0.05 if dados.distancia_km > 500 else 0.0
+    prob_bag = round(min(0.95, base_bag + bag_dist), 3)
+    cobrar   = prob_bag > 0.55
+    if flag_int:
+        justif = "Voo internacional: alta probabilidade de excesso"
+    elif dados.distancia_km > 1500:
+        justif = "Voo longo: passageiros levam mais bagagem"
+    elif prob_bag < 0.3:
+        justif = "Baixo histórico de excesso nesta rota"
+    else:
+        justif = "Probabilidade moderada — avaliar pelo histórico da empresa"
+
+    resumo = gerar_resumo(dados, prob_aero, taxa_occ, vazios, pressao, rec_preco, prob_bag, cobrar)
+    return dict(
+        prob_aeroporto_cheio  = prob_aero,
+        lotacao_aeroporto     = nivel_aero,
+        taxa_ocupacao_voo     = taxa_occ,
+        assentos_vazios_est   = vazios,
+        bucket_ocupacao       = bucket,
+        pressao_preco         = pressao,
+        recomendacao_preco    = rec_preco,
+        prob_excesso_bagagem  = prob_bag,
+        recomendar_cobranca   = cobrar,
+        justificativa_bagagem = justif,
+        resumo                = resumo,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  ENDPOINTS
 # ══════════════════════════════════════════════════════════════════════════════
 
 @app.post("/prever", response_model=Predicoes)
 async def prever(dados: EntradaVoo):
+    # modo demo: retorna heurística sem carregar modelos
+    if DEMO_MODE:
+        resultado = _prever_demo(dados)
+        return Predicoes(**resultado)
+
     # verifica cache antes de rodar os modelos
     key = _cache_key(dados)
     cached = _get_cache(key)
@@ -753,7 +824,12 @@ async def prever(dados: EntradaVoo):
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "modelos": list(_modelos.keys()), "todos_prontos": len(_modelos) == 4}
+    return {
+        "status": "ok",
+        "modelos": list(_modelos.keys()),
+        "todos_prontos": len(_modelos) == 4,
+        "demo_mode": DEMO_MODE,
+    }
 
 
 
