@@ -3,7 +3,7 @@
 A production-ready machine learning API that predicts airport congestion, seat occupancy, ticket pricing pressure, and baggage excess probability for Brazilian aviation routes — built on 20GB+ of open ANAC (Brazilian Civil Aviation Agency) data.
 
 ## 🚀 Live Demo
-API running at: `http://localhost:8001/docs`
+API running at: https://anac-flight-intelligence-api-production.up.railway.app/docs
 
 ## 🧠 Models
 
