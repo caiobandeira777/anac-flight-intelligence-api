@@ -1,0 +1,31 @@
+# arquivos que NÃO vão para dentro do container Docker
+# (deixa o build mais rápido e a imagem menor)
+
+# dados brutos e processados — pesados e não necessários na API
+data/raw/
+data/processed/
+
+# ambiente virtual Python — será recriado no container
+.venv/
+venv/
+
+# scripts de treino — não precisam estar na API
+01_ingestao.py
+02_feature_engineering.py
+03_modelo_aeroporto.py
+04_modelo_assentos.py
+05_modelos_preco_bagagem.py
+07_monitorar_drift.py
+historico_endpoint.py
+00_verificar_dados.py
+
+# arquivos de desenvolvimento
+*.ipynb
+__pycache__/
+*.pyc
+*.pyo
+.git/
+.gitignore
+
+# logs
+*.log

@@ -1,0 +1,32 @@
+# dados grandes — não subir no GitHub
+*.parquet
+*.csv
+data/
+datasets/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# modelos treinados (arquivos grandes)
+models/*.pt
+models/*.pkl
+models/*.txt
+
+# ambiente virtual
+.env
+.venv
+venv/
+env/
+
+# temporários
+*.log
+*.tmp
+.DS_Store
+*.zip
+
+# Claude Code (configurações locais da ferramenta)
+.claude/
